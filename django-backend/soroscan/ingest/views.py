@@ -179,7 +179,10 @@ def record_event_view(request):
             )
 
     except Exception as e:
-        logger.exception("Failed to record event")
+        logger.exception(
+            "Failed to record event",
+            extra={"contract_id": data.get("contract_id")},
+        )
         return Response(
             {"status": "error", "error": str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,

@@ -31,7 +31,11 @@ def dispatch_webhook(self, event_data: dict[str, Any], webhook_id: int) -> bool:
     try:
         webhook = WebhookSubscription.objects.get(id=webhook_id, is_active=True)
     except WebhookSubscription.DoesNotExist:
-        logger.warning(f"Webhook {webhook_id} not found or inactive")
+        logger.warning(
+            "Webhook %s not found or inactive",
+            webhook_id,
+            extra={"webhook_id": webhook_id},
+        )
         return False
 
     # Generate HMAC signature
@@ -62,22 +66,38 @@ def dispatch_webhook(self, event_data: dict[str, Any], webhook_id: int) -> bool:
         webhook.failure_count = 0
         webhook.save(update_fields=["last_triggered", "failure_count"])
 
-        logger.info(f"Webhook {webhook_id} delivered successfully")
+        contract_id = event_data.get("contract_id")
+        logger.info(
+            "Webhook %s delivered successfully",
+            webhook_id,
+            extra={"webhook_id": webhook_id, "contract_id": contract_id},
+        )
         return True
 
     except requests.RequestException as exc:
         # Update failure count
         webhook.failure_count += 1
         webhook.save(update_fields=["failure_count"])
+        contract_id = event_data.get("contract_id")
 
         # Disable webhook after too many failures
         if webhook.failure_count >= 10:
             webhook.is_active = False
             webhook.save(update_fields=["is_active"])
-            logger.error(f"Webhook {webhook_id} disabled after {webhook.failure_count} failures")
+            logger.error(
+                "Webhook %s disabled after %s failures",
+                webhook_id,
+                webhook.failure_count,
+                extra={"webhook_id": webhook_id, "contract_id": contract_id},
+            )
             return False
 
-        logger.warning(f"Webhook {webhook_id} failed, retrying: {exc}")
+        logger.warning(
+            "Webhook %s failed, retrying: %s",
+            webhook_id,
+            exc,
+            extra={"webhook_id": webhook_id, "contract_id": contract_id},
+        )
         raise self.retry(exc=exc)
 
 
@@ -93,7 +113,7 @@ def process_new_event(event_data: dict[str, Any]) -> None:
     event_type = event_data.get("event_type")
 
     if not contract_id:
-        logger.warning("Event missing contract_id")
+        logger.warning("Event missing contract_id", extra={})
         return
 
     # Find matching webhooks
@@ -109,7 +129,11 @@ def process_new_event(event_data: dict[str, Any]) -> None:
     for webhook in webhooks:
         dispatch_webhook.delay(event_data, webhook.id)
 
-    logger.info(f"Dispatched event to {webhooks.count()} webhooks")
+    logger.info(
+        "Dispatched event to %s webhooks",
+        webhooks.count(),
+        extra={"contract_id": contract_id},
+    )
 
 
 @shared_task
@@ -143,7 +167,7 @@ def sync_events_from_horizon() -> int:
         )
 
         if not contract_ids:
-            logger.info("No active contracts to index")
+            logger.info("No active contracts to index", extra={})
             return 0
 
         # Fetch events from Soroban RPC
@@ -194,13 +218,19 @@ def sync_events_from_horizon() -> int:
                 )
 
         # Update cursor
+        last_ledger = None
         if events_response.events:
-            cursor_state.value = str(events_response.events[-1].ledger)
+            last_ledger = events_response.events[-1].ledger
+            cursor_state.value = str(last_ledger)
             cursor_state.save()
 
-        logger.info(f"Indexed {new_events} new events")
+        logger.info(
+            "Indexed %s new events",
+            new_events,
+            extra={"ledger_sequence": last_ledger},
+        )
         return new_events
 
     except Exception as e:
-        logger.exception("Failed to sync events from Horizon")
+        logger.exception("Failed to sync events from Horizon", extra={})
         return 0

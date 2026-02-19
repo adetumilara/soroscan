@@ -18,6 +18,10 @@ psycopg2-binary>=2.9.9
 celery>=5.3.4
 redis>=5.0.1
 
+# Logging & Error Tracking
+python-json-logger>=2.0.0
+sentry-sdk[django,celery]>=2.0.0
+
 # Utilities
 requests>=2.31.0
 python-dateutil>=2.8.2

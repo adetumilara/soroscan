@@ -49,6 +49,13 @@ celery -A soroscan worker -l info
 celery -A soroscan beat -l info
 ```
 
+## Logging and Sentry
+
+- **Log format**: Set `LOG_FORMAT=json` to emit structured JSON logs (one JSON object per line). Omit or leave unset for human-readable logs. Each JSON line includes `timestamp`, `levelname`, `name` (logger), and `message`; ingest logs also include `request_id`, `contract_id`, and `ledger_sequence` when available.
+- **Sentry**: Optional. Set `SENTRY_DSN` to enable error and performance monitoring. If unset, the application starts normally and Sentry is not initialised. Celery task failures are reported to Sentry with task name context when the integration is enabled.
+- **Performance traces**: When Sentry is enabled, `SENTRY_TRACES_SAMPLE_RATE` defaults to `0.1` (10%) to control cost; set in `.env` if needed.
+- **PII**: Do not log personally identifiable information. Keep log messages and structured fields free of user emails, secret keys, or other sensitive data.
+
 ## API Endpoints
 
 - `POST /api/ingest/record/` - Record a new event

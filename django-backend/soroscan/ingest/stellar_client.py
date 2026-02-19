@@ -159,7 +159,11 @@ class SorobanClient:
             # Submit
             send_response = self.server.send_transaction(prepared_tx)
 
-            logger.info(f"Transaction submitted: {send_response.hash}")
+            logger.info(
+                "Transaction submitted: %s",
+                send_response.hash,
+                extra={"contract_id": target_contract_id},
+            )
 
             return TransactionResult(
                 success=send_response.status == "PENDING",
@@ -169,7 +173,10 @@ class SorobanClient:
             )
 
         except Exception as e:
-            logger.exception("Failed to record event")
+            logger.exception(
+                "Failed to record event",
+                extra={"contract_id": target_contract_id},
+            )
             return TransactionResult(
                 success=False,
                 tx_hash="",
