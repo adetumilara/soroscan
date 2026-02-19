@@ -25,6 +25,7 @@ sentry-sdk[django,celery]>=2.0.0
 # Utilities
 requests>=2.31.0
 python-dateutil>=2.8.2
+jsonschema>=4.0.0
 
 # Development
 pytest>=7.4.3
