@@ -86,10 +86,17 @@ class TrackedContractAdmin(admin.ModelAdmin):
             )
 
 
+@admin.register(EventSchema)
+class EventSchemaAdmin(admin.ModelAdmin):
+    list_display = ["contract", "event_type", "version", "created_at"]
+    list_filter = ["contract", "event_type"]
+    search_fields = ["event_type", "contract__name"]
+
+
 @admin.register(ContractEvent)
 class ContractEventAdmin(admin.ModelAdmin):
-    list_display = ["event_type", "contract_name", "ledger", "timestamp", "tx_hash_short"]
-    list_filter = ["event_type", "contract", "timestamp"]
+    list_display = ["event_type", "contract_name", "ledger", "validation_status", "timestamp", "tx_hash_short"]
+    list_filter = ["event_type", "contract", "validation_status", "timestamp"]
     search_fields = ["event_type", "tx_hash", "contract__name"]
     readonly_fields = ["payload_hash", "timestamp"]
     ordering = ["-timestamp"]

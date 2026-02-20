@@ -50,8 +50,22 @@ class ContractEventSerializer(serializers.ModelSerializer):
             "event_index",
             "timestamp",
             "tx_hash",
+            "schema_version",
+            "validation_status",
         ]
-        read_only_fields = fields
+        read_only_fields = [
+            "id",
+            "contract_id",
+            "contract_name",
+            "event_type",
+            "payload",
+            "payload_hash",
+            "ledger",
+            "timestamp",
+            "tx_hash",
+            "schema_version",
+            "validation_status",
+        ]
 
 
 class WebhookSubscriptionSerializer(serializers.ModelSerializer):

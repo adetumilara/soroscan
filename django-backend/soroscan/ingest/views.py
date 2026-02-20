@@ -89,7 +89,7 @@ class ContractEventViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = ContractEventSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
-    filterset_fields = ["contract__contract_id", "event_type", "ledger"]
+    filterset_fields = ["contract__contract_id", "event_type", "ledger", "validation_status"]
     ordering_fields = ["timestamp", "ledger"]
     ordering = ["-timestamp"]
 
@@ -179,7 +179,10 @@ def record_event_view(request):
             )
 
     except Exception as e:
-        logger.exception("Failed to record event")
+        logger.exception(
+            "Failed to record event",
+            extra={"contract_id": data.get("contract_id")},
+        )
         return Response(
             {"status": "error", "error": str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,

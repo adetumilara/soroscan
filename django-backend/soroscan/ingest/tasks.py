@@ -7,6 +7,7 @@ import logging
 from datetime import datetime, timezone as dt_timezone
 from typing import Any
 
+import jsonschema
 import requests
 from celery import shared_task
 from django.utils import timezone
@@ -80,6 +81,49 @@ def _upsert_contract_event(
     )
 
 
+def validate_event_payload(
+    contract: TrackedContract,
+    event_type: str,
+    payload: dict[str, Any],
+    ledger: int | None = None,
+) -> tuple[bool, int | None]:
+    """
+    Validate event payload against the latest EventSchema for this contract+event_type.
+
+    Returns:
+        (passed, version_used): passed is True if no schema exists or validation succeeded;
+        version_used is the EventSchema.version used, or None if no schema.
+    """
+    if payload is None or not isinstance(payload, dict):
+        return (True, None)
+    schema = (
+        EventSchema.objects.filter(
+            contract=contract,
+            event_type=event_type,
+        )
+        .order_by("-version")
+        .first()
+    )
+    if schema is None:
+        return (True, None)
+    try:
+        jsonschema.validate(instance=payload, schema=schema.json_schema)
+        return (True, schema.version)
+    except jsonschema.ValidationError:
+        logger.warning(
+            "Event payload schema validation failed for contract_id=%s event_type=%s ledger=%s",
+            contract.contract_id,
+            event_type,
+            ledger,
+            extra={
+                "contract_id": contract.contract_id,
+                "event_type": event_type,
+                "ledger": ledger,
+            },
+        )
+        return (False, schema.version)
+
+
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def dispatch_webhook(self, event_data: dict[str, Any], webhook_id: int) -> bool:
     """
@@ -95,7 +139,11 @@ def dispatch_webhook(self, event_data: dict[str, Any], webhook_id: int) -> bool:
     try:
         webhook = WebhookSubscription.objects.get(id=webhook_id, is_active=True)
     except WebhookSubscription.DoesNotExist:
-        logger.warning(f"Webhook {webhook_id} not found or inactive")
+        logger.warning(
+            "Webhook %s not found or inactive",
+            webhook_id,
+            extra={"webhook_id": webhook_id},
+        )
         return False
 
     # Generate HMAC signature
@@ -126,22 +174,38 @@ def dispatch_webhook(self, event_data: dict[str, Any], webhook_id: int) -> bool:
         webhook.failure_count = 0
         webhook.save(update_fields=["last_triggered", "failure_count"])
 
-        logger.info(f"Webhook {webhook_id} delivered successfully")
+        contract_id = event_data.get("contract_id")
+        logger.info(
+            "Webhook %s delivered successfully",
+            webhook_id,
+            extra={"webhook_id": webhook_id, "contract_id": contract_id},
+        )
         return True
 
     except requests.RequestException as exc:
         # Update failure count
         webhook.failure_count += 1
         webhook.save(update_fields=["failure_count"])
+        contract_id = event_data.get("contract_id")
 
         # Disable webhook after too many failures
         if webhook.failure_count >= 10:
             webhook.is_active = False
             webhook.save(update_fields=["is_active"])
-            logger.error(f"Webhook {webhook_id} disabled after {webhook.failure_count} failures")
+            logger.error(
+                "Webhook %s disabled after %s failures",
+                webhook_id,
+                webhook.failure_count,
+                extra={"webhook_id": webhook_id, "contract_id": contract_id},
+            )
             return False
 
-        logger.warning(f"Webhook {webhook_id} failed, retrying: {exc}")
+        logger.warning(
+            "Webhook %s failed, retrying: %s",
+            webhook_id,
+            exc,
+            extra={"webhook_id": webhook_id, "contract_id": contract_id},
+        )
         raise self.retry(exc=exc)
 
 
@@ -157,7 +221,7 @@ def process_new_event(event_data: dict[str, Any]) -> None:
     event_type = event_data.get("event_type")
 
     if not contract_id:
-        logger.warning("Event missing contract_id")
+        logger.warning("Event missing contract_id", extra={})
         return
 
     # Find matching webhooks
@@ -173,7 +237,11 @@ def process_new_event(event_data: dict[str, Any]) -> None:
     for webhook in webhooks:
         dispatch_webhook.delay(event_data, webhook.id)
 
-    logger.info(f"Dispatched event to {webhooks.count()} webhooks")
+    logger.info(
+        "Dispatched event to %s webhooks",
+        webhooks.count(),
+        extra={"contract_id": contract_id},
+    )
 
 
 @shared_task
@@ -207,7 +275,7 @@ def sync_events_from_horizon() -> int:
         )
 
         if not contract_ids:
-            logger.info("No active contracts to index")
+            logger.info("No active contracts to index", extra={})
             return 0
 
         # Fetch events from Soroban RPC
@@ -231,7 +299,35 @@ def sync_events_from_horizon() -> int:
             except TrackedContract.DoesNotExist:
                 continue
 
-            event_record, created = _upsert_contract_event(contract, event, fallback_event_index)
+            payload = event.value  # Decoded payload
+            passed, version_used = validate_event_payload(
+                contract, event.type, payload, ledger=event.ledger
+            )
+            validation_status = "passed" if passed else "failed"
+            schema_version = version_used
+
+            # Create or get event record
+            event_record, created = ContractEvent.objects.get_or_create(
+                tx_hash=event.tx_hash,
+                ledger=event.ledger,
+                event_type=event.type,
+                defaults={
+                    "contract": contract,
+                    "payload": payload,
+                    "timestamp": timezone.now(),  # Should parse from ledger
+                    "raw_xdr": event.xdr if hasattr(event, "xdr") else "",
+                    "validation_status": validation_status,
+                    "schema_version": schema_version,
+                },
+            )
+            if not created:
+                if (
+                    event_record.validation_status != validation_status
+                    or event_record.schema_version != schema_version
+                ):
+                    event_record.validation_status = validation_status
+                    event_record.schema_version = schema_version
+                    event_record.save(update_fields=["validation_status", "schema_version"])
 
             if created:
                 new_events += 1
@@ -252,15 +348,21 @@ def sync_events_from_horizon() -> int:
                 contract.save(update_fields=["last_indexed_ledger"])
 
         # Update cursor
+        last_ledger = None
         if events_response.events:
-            cursor_state.value = str(events_response.events[-1].ledger)
+            last_ledger = events_response.events[-1].ledger
+            cursor_state.value = str(last_ledger)
             cursor_state.save()
 
-        logger.info(f"Indexed {new_events} new events")
+        logger.info(
+            "Indexed %s new events",
+            new_events,
+            extra={"ledger_sequence": last_ledger},
+        )
         return new_events
 
     except Exception as e:
-        logger.exception("Failed to sync events from Horizon")
+        logger.exception("Failed to sync events from Horizon", extra={})
         return 0
 
 
